@@ -42,13 +42,13 @@ def check_tree (ori_tag, line):
 
 def bertInit():
     #config = Ber
-    berttokenizer = BertTokenizer.from_pretrained('bert-large-cased')
-    bertmodel = BertForMaskedLM.from_pretrained("bert-large-cased")#'/data/szy/bertlarge')
-    bertori = BertModel.from_pretrained("bert-large-cased")#'/data/szy/bertlarge')
+    berttokenizer = BertTokenizer.from_pretrained('bert-large-cased') # the tokenizer
+    bertmodel = BertForMaskedLM.from_pretrained("bert-large-cased")#'/data/szy/bertlarge') # use the LM version model.
+    bertori = BertModel.from_pretrained("bert-large-cased")#'/data/szy/bertlarge') # the ori model
     #berttokenizer = RobertaTokenizer.from_pretrained('bert-large-uncased')
     #bertmodel = RoBertaForMaskedLM.from_pretrained('/data/szy/bertlarge')
-    bertmodel.eval().cuda()#.to(torch.device("cuda:0"))
-    bertori.eval().cuda()#.to(torch.device("cuda:1"))
+    bertmodel.eval().cuda()#.to(torch.device("cuda:0")) # set into the eval mode
+    bertori.eval().cuda()#.to(torch.device("cuda:1")) # set into the eval mode
     
     return bertmodel, berttokenizer, bertori
 
@@ -71,24 +71,28 @@ def BertM (bert, berttoken, inpori, bertori):
     ltokens = ["[CLS]"] + tokens + ["[SEP]"]
     #oriencoding = bertori(torch.tensor([berttoken.convert_tokens_to_ids(ltokens)]).cuda())[0][0].data.cpu().numpy()
     #print ([ltokens[0:i] + ["[MASK]"] + ltokens[i + 1:] for i in range(1, len(ltokens) - 1)])
+    
+    # convert_ids_to_tokens is to convert the token ids to token string, for instance, convert [102] to ['[SEP]'], convert [1002] to ['$']
+    #  convert_tokens_to_ids is to do the ops
     try:
-        encoding = [berttoken.convert_tokens_to_ids(ltokens[0:i] + ["[MASK]"] + ltokens[i + 1:]) for i in range(1, len(ltokens) - 1)]#.cuda()
+        encoding = [berttoken.convert_tokens_to_ids(ltokens[0:i] + ["[MASK]"] + ltokens[i + 1:]) for i in range(1, len(ltokens) - 1)]#.cuda() 
+        # 针对一个句子，每个句子的每个地方mask一下
     except:
         return " ".join(tokens), gen
     p = []
-    for i in range(0, len(encoding), batchsize):
-        tensor = torch.tensor(encoding[i: min(len(encoding), i + batchsize)]).cuda()
-        pre = F.softmax(bert(tensor)[0], dim=-1).data.cpu()
-        p.append(pre)
+    for i in range(0, len(encoding), batchsize): # 分了batch，因为串行比较慢
+        tensor = torch.tensor(encoding[i: min(len(encoding), i + batchsize)]).cuda() # 然后生成向量
+        pre = F.softmax(bert(tensor)[0], dim=-1).data.cpu() # 然后输入到bert里面，获得输出 然后再softmax一下
+        p.append(pre) #这里保存了概率矩阵
     pre = torch.cat(p, 0)
     #print (len(pre), len())
     #topk = torch.topk(pre[i][i + 1], K_Number)#.tolist()
     tarl = [[tokens, -1]]
-    for i in range(len(tokens)):
+    for i in range(len(tokens)): # 对于原始句子的每个位置
         #i = 1
         #if tag[i][1] not in ["NNS", "JJ", "NN", "NNP", "NNPS", "CD", "NNPS"]:i
         #    continue
-        if tokens[i] in string.punctuation:
+        if tokens[i] in string.punctuation: # 如果是标点符号就继续
             continue
         #token = tokens[i]
         #print (tokens)
@@ -104,24 +108,24 @@ def BertM (bert, berttoken, inpori, bertori):
         #pre = bert(tensor)[0] #F.softmax(bert(tensor)[0], dim=-1)
         #print (pre)
 
-        topk = torch.topk(pre[i][i + 1], K_Number)#.tolist()
+        topk = torch.topk(pre[i][i + 1], K_Number)#.tolist() # 取出前K个token和概率值
         value = topk[0].numpy()
         topk = topk[1].numpy().tolist()
         
         #print (topk)
-        topkTokens = berttoken.convert_ids_to_tokens(topk)
+        topkTokens = berttoken.convert_ids_to_tokens(topk) # 把token的值变为string
         #print (topkTokens)
         #DA = oriencoding[i]
         
        # tarl = []
         for index in range(len(topkTokens)):
-            if value[index] < 0.05:
+            if value[index] < 0.05: # 不要小于0.05的token
                 break
             tt = topkTokens[index]
             #print (tt)
-            if tt in string.punctuation:
+            if tt in string.punctuation: #不要标点符号
                 continue
-            if tt.strip() == tokens[i].strip():
+            if tt.strip() == tokens[i].strip(): #如果单词和原来一样 也不能要哦
                 continue
             l = deepcopy(tokens)
             l[i] = tt
@@ -137,6 +141,8 @@ def BertM (bert, berttoken, inpori, bertori):
 
     #oriencoding = bertori(torch.tensor([berttoken.convert_tokens_to_ids(ltokens)]).cuda())[0][0].data.cpu().numpy()
     #oriencoding = bertori(torch.tensor([berttoken.convert_tokens_to_ids(ltokens)]).cuda())[0][0].data.cpu().numpy()
+    
+    # 把选好的单词输入到完整的Bert模型里面
     for i in range(0, len(tarl), batchsize):
         #tarlist = tarl[i: min(len(tarl), i + 300]
         lDB.append(bertori(torch.tensor([berttoken.convert_tokens_to_ids(["[CLS]"] + l[0] + ["[SEP]"]) for l in tarl[i: min(i + batchsize, len(tarl))]]).cuda())[0].data.cpu().numpy())
@@ -145,18 +151,18 @@ def BertM (bert, berttoken, inpori, bertori):
     #print ("-----------------")
     #print (len(lDB))
     #print (len(tarl))
-    lDA = lDB[0]
+    lDA = lDB[0] #这个的意思是 原始的句子应该在0处
     assert len(lDB) == len(tarl)
     tarl = tarl[1:]
     lDB = lDB[1:]
     for t in range(len(lDB)):
-        DB = lDB[t][tarl[t][1]]
+        DB = lDB[t][tarl[t][1]] # 找到那个单词对应的向量
         DA = lDA[tarl[t][1]]
 #        assert np.shape(DA) == np.shape(DB)
         cossim = np.sum(DA * DB) / (np.sqrt(np.sum(DA * DA)) * np.sqrt(np.sum(DB * DB)))
 #        print (cossim)
         #print ()
-        if cossim < 0.85:
+        if cossim < 0.85: #阈值是0.85
             continue
             #print ("------")
             #print (" ".join(oritokens))
